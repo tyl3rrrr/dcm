@@ -15,12 +15,74 @@
 // aussehen (inkl. "https://www."), sonst wird die Badge nicht lila, sondern
 // bleibt grün. Anpassbar über STREAM_URL in der .env.
 
+const fs = require('fs');
+const path = require('path');
 const { Client, GatewayIntentBits, ActivityType, Events, Collection } = require('discord.js');
 
 const config = require('./config');
 const commandList = require('./commands');
 const { OPEN_BUTTON_ID, CLOSE_BUTTON_ID, handleOpenTicket, handleCloseTicket } = require('./commands-tickets');
 const legacySupport = require('./legacy-support');
+
+// ---------------------------------------------------------------------------
+// BUGFIX "unendliche/doppelte Nachrichten": Die wahrscheinlichste Ursache
+// war, dass der Bot-PROZESS zweimal gleichzeitig lief (z.B. weil ein alter
+// Prozess beim Neustart nicht beendet wurde). Discord schickt Nachrichten-
+// und Interaktions-Events an JEDE aktive Verbindung mit demselben Token -
+// bei zwei laufenden Prozessen wird deshalb jede Aktion zweimal ausgeführt
+// (doppelte DMs, doppelte Support-Anfragen, etc.).
+//
+// Diese einfache Sperrdatei verhindert das: Beim Start wird geprüft, ob
+// bereits ein anderer, noch laufender Prozess eine bot.lock-Datei hält.
+// Falls ja, wird der Start abgebrochen und eine klare Fehlermeldung
+// ausgegeben, statt dass zwei Instanzen gleichzeitig laufen.
+// ---------------------------------------------------------------------------
+const LOCK_FILE = path.join(__dirname, 'bot.lock');
+
+function isProcessAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return false; // Prozess existiert nicht (mehr)
+  }
+}
+
+function acquireLock() {
+  if (fs.existsSync(LOCK_FILE)) {
+    const existingPid = parseInt(fs.readFileSync(LOCK_FILE, 'utf8').trim(), 10);
+    if (!Number.isNaN(existingPid) && isProcessAlive(existingPid)) {
+      console.error(
+        `❌ Der Bot läuft bereits in einem anderen Prozess (PID ${existingPid})!\n` +
+          'Genau DAS verursacht doppelte/"unendliche" Nachrichten (Discord schickt Events an beide Prozesse).\n' +
+          `Bitte beende den anderen Prozess (z.B. "kill ${existingPid}" oder den Task-Manager) und starte danach neu.\n` +
+          `Falls du sicher bist, dass kein anderer Prozess läuft, lösche einfach die Datei "bot.lock" und starte erneut.`
+      );
+      process.exit(1);
+    }
+    // Alte, verwaiste Lock-Datei (Prozess existiert nicht mehr) - überschreiben.
+  }
+  fs.writeFileSync(LOCK_FILE, String(process.pid), 'utf8');
+}
+
+function releaseLock() {
+  try {
+    if (fs.existsSync(LOCK_FILE)) fs.unlinkSync(LOCK_FILE);
+  } catch (err) {
+    // Ignorieren - beim Herunterfahren nicht kritisch.
+  }
+}
+
+acquireLock();
+process.on('exit', releaseLock);
+process.on('SIGINT', () => {
+  releaseLock();
+  process.exit(0);
+});
+process.on('SIGTERM', () => {
+  releaseLock();
+  process.exit(0);
+});
 
 const { DISCORD_TOKEN } = process.env;
 
@@ -56,7 +118,7 @@ for (const command of commandList) {
 console.log(`${client.commands.size} Command(s) geladen: ${[...client.commands.keys()].join(', ')}`);
 
 function setPresence(readyClient) {
-  const streamUrl = process.env.STREAM_URL || 'https://www.twitch.tv/discord';
+  const streamUrl = process.env.STREAM_URL || 'https://www.twitch.tv/0tylxrrrr';
 
   readyClient.user.setPresence({
     status: 'online',

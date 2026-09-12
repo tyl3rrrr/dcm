@@ -21,85 +21,44 @@ function sanitizeChannelName(username) {
     .slice(0, 90);
 }
 
-const ticketPanel = {
-  data: new SlashCommandBuilder()
-    .setName('ticket-panel')
-    .setDescription('Postet ein Panel, über das Nutzer Support-Tickets öffnen können')
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-    .setDMPermission(false),
-
-  async execute(interaction) {
-    const settings = storage.getGuildSettings(interaction.guild.id);
-
-    if (!settings.ticketCategoryId) {
-      await interaction.reply({
-        content:
-          '❌ Es ist noch keine Ticket-Kategorie eingestellt. Bitte zuerst `/settings ticket-category` ausführen.',
-        ephemeral: true,
-      });
-      return;
-    }
-
-    const embed = new EmbedBuilder()
-      .setTitle('🎫 Support-Ticket')
-      .setDescription('Klicke auf den Button unten, um ein privates Support-Ticket zu öffnen.')
-      .setColor(0x5865f2);
-
-    const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(OPEN_BUTTON_ID).setLabel('Ticket erstellen').setStyle(ButtonStyle.Primary).setEmoji('🎫')
-    );
-
-    await interaction.reply({ embeds: [embed], components: [row] });
-  },
-};
-
-async function handleOpenTicket(interaction) {
-  const guild = interaction.guild;
+// ---------------------------------------------------------------------------
+// Gemeinsame Ticket-Erstellung - wird von der Button-Interaktion (Panel)
+// UND vom Text-Befehl "!support" genutzt, damit es nur EIN Ticket-System
+// mit einheitlichem Verhalten gibt (statt zwei getrennten Implementierungen).
+// ---------------------------------------------------------------------------
+async function createTicketChannel(guild, requester, initialText) {
   const settings = storage.getGuildSettings(guild.id);
 
   if (!settings.ticketCategoryId) {
-    await interaction.reply({
-      content: '❌ Es ist noch keine Ticket-Kategorie eingestellt. Ein Admin muss zuerst `/settings ticket-category` ausführen.',
-      ephemeral: true,
-    });
-    return;
+    return { ok: false, error: 'Es ist noch keine Ticket-Kategorie eingestellt (`/settings ticket-category` oder `!support config`).' };
   }
 
   const category = guild.channels.cache.get(settings.ticketCategoryId);
   if (!category) {
-    await interaction.reply({
-      content: '❌ Die eingestellte Ticket-Kategorie existiert nicht mehr. Bitte per `/settings ticket-category` neu setzen.',
-      ephemeral: true,
-    });
-    return;
+    return { ok: false, error: 'Die eingestellte Ticket-Kategorie existiert nicht mehr. Bitte neu einstellen.' };
   }
 
-  // Prüfen, ob der Nutzer bereits ein offenes Ticket hat (Topic = User-ID)
-  const existing = category.children?.cache?.find((ch) => ch.topic === interaction.user.id);
+  // Doppelte Tickets pro Nutzer verhindern (Topic = User-ID)
+  const existing = category.children?.cache?.find((ch) => ch.topic === requester.id);
   if (existing) {
-    await interaction.reply({ content: `❗ Du hast bereits ein offenes Ticket: ${existing.toString()}`, ephemeral: true });
-    return;
+    return { ok: true, existing: true, channel: existing };
   }
-
-  await interaction.deferReply({ ephemeral: true });
 
   let me;
   try {
     me = await guild.members.fetchMe();
   } catch (err) {
-    await interaction.editReply(`❌ Konnte eigene Berechtigungen nicht prüfen: ${err.message}`);
-    return;
+    return { ok: false, error: `Konnte eigene Berechtigungen nicht prüfen: ${err.message}` };
   }
 
   if (!me.permissions.has(PermissionFlagsBits.ManageChannels)) {
-    await interaction.editReply('❌ Mir fehlt die Berechtigung "Kanäle verwalten", um ein Ticket zu erstellen.');
-    return;
+    return { ok: false, error: 'Mir fehlt die Berechtigung "Kanäle verwalten", um ein Ticket zu erstellen.' };
   }
 
   const permissionOverwrites = [
     { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
     {
-      id: interaction.user.id,
+      id: requester.id,
       allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory],
     },
     {
@@ -118,20 +77,23 @@ async function handleOpenTicket(interaction) {
   try {
     const ticketNumber = storage.nextTicketNumber(guild.id);
     const channel = await guild.channels.create({
-      name: sanitizeChannelName(interaction.user.username),
+      name: sanitizeChannelName(requester.username),
       type: ChannelType.GuildText,
       parent: category.id,
-      topic: interaction.user.id,
+      topic: requester.id,
       permissionOverwrites,
-      reason: `Ticket #${ticketNumber} von ${interaction.user.tag}`,
+      reason: `Ticket #${ticketNumber} von ${requester.tag}`,
     });
 
     const embed = new EmbedBuilder()
       .setTitle(`🎫 Ticket #${ticketNumber}`)
       .setDescription(
-        `Hallo <@${interaction.user.id}>! Beschreibe dein Problem oder deine Frage - das Support-Team meldet sich hier.`
+        initialText
+          ? `**Anliegen von <@${requester.id}>:**\n${initialText}`
+          : `Hallo <@${requester.id}>! Beschreibe dein Problem oder deine Frage - das Support-Team meldet sich hier.`
       )
-      .setColor(0x5865f2);
+      .setColor(0x5865f2)
+      .setTimestamp();
 
     const closeRow = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(CLOSE_BUTTON_ID).setLabel('Ticket schließen').setStyle(ButtonStyle.Danger).setEmoji('🔒')
@@ -143,20 +105,71 @@ async function handleOpenTicket(interaction) {
       components: [closeRow],
     });
 
-    await interaction.editReply(`✅ Dein Ticket wurde erstellt: ${channel.toString()}`);
-
+    // Genau EINE Benachrichtigung im Log-Kanal - nicht wiederholt.
     if (settings.logChannelId) {
       const logChannel = guild.channels.cache.get(settings.logChannelId);
       if (logChannel && logChannel.isTextBased()) {
         await logChannel
-          .send(`🎫 Ticket #${ticketNumber} von **${interaction.user.tag}** erstellt: ${channel.toString()}`)
+          .send(`🎫 Ticket #${ticketNumber} von **${requester.tag}** erstellt: ${channel.toString()}`)
           .catch(() => {});
       }
     }
+
+    return { ok: true, existing: false, channel, ticketNumber };
   } catch (err) {
     console.error('Fehler beim Erstellen des Ticket-Kanals:', err);
-    await interaction.editReply(`❌ Konnte kein Ticket erstellen: ${err.message}`);
+    return { ok: false, error: err.message };
   }
+}
+
+const ticketPanel = {
+  data: new SlashCommandBuilder()
+    .setName('ticket-panel')
+    .setDescription('Postet ein Panel, über das Nutzer Support-Tickets öffnen können (Button "Create Ticket")')
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .setDMPermission(false),
+
+  async execute(interaction) {
+    const settings = storage.getGuildSettings(interaction.guild.id);
+
+    if (!settings.ticketCategoryId) {
+      await interaction.reply({
+        content:
+          '❌ Es ist noch keine Ticket-Kategorie eingestellt. Bitte zuerst `/settings ticket-category` ausführen (oder `!support config`).',
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const embed = new EmbedBuilder()
+      .setTitle('🎫 Support-Ticket')
+      .setDescription('Klicke auf den Button unten, um ein privates Support-Ticket zu öffnen.')
+      .setColor(0x5865f2);
+
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(OPEN_BUTTON_ID).setLabel('Create Ticket').setStyle(ButtonStyle.Primary).setEmoji('🎫')
+    );
+
+    await interaction.reply({ embeds: [embed], components: [row] });
+  },
+};
+
+async function handleOpenTicket(interaction) {
+  await interaction.deferReply({ ephemeral: true });
+
+  const result = await createTicketChannel(interaction.guild, interaction.user, null);
+
+  if (!result.ok) {
+    await interaction.editReply(`❌ ${result.error}`);
+    return;
+  }
+
+  if (result.existing) {
+    await interaction.editReply(`❗ Du hast bereits ein offenes Ticket: ${result.channel.toString()}`);
+    return;
+  }
+
+  await interaction.editReply(`✅ Dein Ticket wurde erstellt: ${result.channel.toString()}`);
 }
 
 async function handleCloseTicket(interaction) {
@@ -199,4 +212,5 @@ module.exports = {
   CLOSE_BUTTON_ID,
   handleOpenTicket,
   handleCloseTicket,
+  createTicketChannel,
 };

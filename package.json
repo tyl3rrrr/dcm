@@ -1,7 +1,7 @@
 {
   "name": "tylxrrrr-discord-bot",
-  "version": "4.0.0",
-  "description": "Discord Bot: Info-, Mod-, Utility- und Ticket-Befehle, !support-System mit DM-Benachrichtigungen, lilaner Streaming-Status - flache Struktur ohne Unterordner",
+  "version": "5.0.0",
+  "description": "Discord Bot: Info-, Mod-, Utility-, Ticket- und Support-Befehle mit Single-Instance-Schutz, DM-Benachrichtigungen, lilaner Streaming-Status - flache Struktur ohne Unterordner",
   "main": "index.js",
   "type": "commonjs",
   "scripts": {

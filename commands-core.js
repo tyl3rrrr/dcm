@@ -195,9 +195,22 @@ function buildHelpCommand(getAllCommands) {
           'nickname',
           'role',
           'purge-user',
+          'say',
         ],
         '🎫 Tickets': ['ticket-panel'],
-        '🧰 Sonstiges': ['userinfo', 'serverinfo', 'avatar', 'poll', 'remindme', 'suggest'],
+        '🧰 Sonstiges': [
+          'userinfo',
+          'serverinfo',
+          'avatar',
+          'poll',
+          'remindme',
+          'suggest',
+          'coinflip',
+          'dice',
+          '8ball',
+          'membercount',
+          'roleinfo',
+        ],
         '⚙️ Einstellungen & Admin': ['settings', 'reload'],
       };
 
