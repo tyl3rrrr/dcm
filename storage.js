@@ -67,10 +67,15 @@ function nextTicketNumber(guildId) {
   return next;
 }
 
+const MAX_WARNS_PER_USER = 100; // verhindert unbegrenztes Wachstum über Jahre hinweg
+
 function addWarn(guildId, userId, warnEntry) {
   if (!data.warns[guildId]) data.warns[guildId] = {};
   if (!data.warns[guildId][userId]) data.warns[guildId][userId] = [];
   data.warns[guildId][userId].push(warnEntry);
+  if (data.warns[guildId][userId].length > MAX_WARNS_PER_USER) {
+    data.warns[guildId][userId] = data.warns[guildId][userId].slice(-MAX_WARNS_PER_USER);
+  }
   saveData(data);
   return data.warns[guildId][userId];
 }

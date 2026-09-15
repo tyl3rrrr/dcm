@@ -17,7 +17,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { Client, GatewayIntentBits, ActivityType, Events, Collection } = require('discord.js');
+const { Client, GatewayIntentBits, ActivityType, Events, Collection, Options } = require('discord.js');
 
 const config = require('./config');
 const commandList = require('./commands');
@@ -102,8 +102,52 @@ if (!DISCORD_TOKEN) {
 //   gar keine Gateway-Events für DMs von Nutzern - er kann also technisch
 //   keine DMs "empfangen" bzw. verarbeiten. Senden von DMs (z.B. bei /warn)
 //   funktioniert davon unabhängig weiterhin, siehe dm-notify.js.
+// ---------------------------------------------------------------------------
+// RAM-OPTIMIERUNG (Ziel: zuverlässig unter 2GB RAM laufen, Host nicht
+// einfrieren lassen):
+//
+// discord.js cacht standardmäßig sehr viel (jede gesehene Nachricht, jeden
+// Member, jede Reaction, ...) - bei Servern mit vielen Nachrichten/Mitgliedern
+// wächst der Speicherverbrauch dadurch unbegrenzt. Wir schränken das gezielt
+// auf das ein, was der Bot tatsächlich braucht:
+// - Nachrichten: nur die letzten 50 pro Kanal im Cache behalten (für /clear,
+//   /purge-user reicht ein frischer fetch() ohnehin, der Cache ist nur ein
+//   Beschleuniger).
+// - Reactions/Presences/Stage-Instanzen/Scheduled-Events/Invites/Bans/
+//   Voice-States: wird von diesem Bot NICHT genutzt -> komplett deaktiviert
+//   (0 = nichts cachen).
+// - Member-Cache: auf 200 pro Server begrenzt (Berechtigungsprüfungen laufen
+//   ohnehin meist über frische fetchMe()-Aufrufe, siehe commands-tickets.js).
+//
+// Zusätzlich: "sweepers" räumen periodisch alte, nicht mehr benötigte
+// Nachrichten aus dem Cache, statt dass er nur wächst.
+// ---------------------------------------------------------------------------
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
+  makeCache: Options.cacheWithLimits({
+    MessageManager: 50,
+    ReactionManager: 0,
+    PresenceManager: 0,
+    GuildMemberManager: 200,
+    ThreadManager: 25,
+    GuildBanManager: 0,
+    GuildInviteManager: 0,
+    GuildScheduledEventManager: 0,
+    StageInstanceManager: 0,
+    VoiceStateManager: 0,
+    ApplicationCommandManager: 0,
+    AutoModerationRuleManager: 0,
+  }),
+  sweepers: {
+    messages: {
+      interval: 1800, // alle 30 Minuten prüfen
+      lifetime: 900, // Nachrichten älter als 15 Minuten aus dem Cache entfernen
+    },
+    threads: {
+      interval: 3600,
+      lifetime: 3600,
+    },
+  },
 });
 
 client.commands = new Collection();
@@ -115,7 +159,17 @@ for (const command of commandList) {
   client.commands.set(command.data.name, command);
 }
 
+console.log('='.repeat(60));
+console.log(`🚀 Bot-Prozess gestartet - PID: ${process.pid}`);
+console.log(`📦 Node.js: ${process.version}`);
 console.log(`${client.commands.size} Command(s) geladen: ${[...client.commands.keys()].join(', ')}`);
+console.log(
+  'ℹ️ Falls hier ein Befehl fehlt, den du gerade hinzugefügt hast: ' +
+    'Dieser Prozess wurde VOR der Änderung gestartet - Bot komplett neu starten ' +
+    '(nicht nur "npm run deploy"). Prüfe zusätzlich mit "ps aux | grep node" ' +
+    '(Linux/Mac) bzw. "tasklist | findstr node" (Windows), ob nur EIN Prozess läuft.'
+);
+console.log('='.repeat(60));
 
 function setPresence(readyClient) {
   const streamUrl = process.env.STREAM_URL || 'https://www.twitch.tv/0tylxrrrr';
