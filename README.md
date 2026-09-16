@@ -35,9 +35,6 @@ Wortliste (Wortgrenzen-Regex, Groß-/Kleinschreibung egal) - es wird
 KEINE Anfrage an Discords AutoMod-API gestellt, dadurch entfallen deren
 bekannte Zuverlässigkeitsprobleme vollständig.
 
-**Standard-Blockliste:** Nigga, Negger, Asylant, Bastard, Nutte, Hundesohn,
-Hurensohn, Fotze, Slime, Fort, Disc, LoL
-
 Bei einem Treffer wird die Nachricht sofort gelöscht, eine kurze Hinweis-
 Nachricht (löscht sich nach 6 Sekunden selbst) gepostet, und - falls über
 `/settings log-channel` bzw. `!support config` gesetzt - eine Meldung in den
