@@ -1,4 +1,0 @@
-Options -Indexes
-<FilesMatch "^(dashboard-config\.php|\.env)$">
-  Require all denied
-</FilesMatch>
