@@ -1,185 +1,335 @@
 // index.js
-require('dotenv').config();
-const fs=require('fs'), path=require('path'), http=require('http');
-const {Client,GatewayIntentBits,Events,Collection,Options,Partials}=require('discord.js');
-const config=require('./config');
-const commandList=require('./commands');
-const {syncCommands}=require('./command-sync');
-const {OPEN_BUTTON_ID,CLOSE_BUTTON_ID,handleOpenTicket,handleCloseTicket}=require('./commands-tickets');
-const legacySupport=require('./legacy-support');
-const {handleAutoModCheck}=require('./automod-filter');
-const spotify=require('./spotify');
-const storage=require('./storage');
-const {requireAccess,ACCESS}=require('./permissions');
-const {handleGuildMemberAdd}=require('./commands-welcome');
-const {handleMessageXp,refreshLeaderboardMessage}=require('./xp');
-const {handleMention}=require('./commands-ai');
-const {handleAppearanceComponent}=require('./commands-appearance');
-const {applyPresence}=require('./runtime');
-const {handleDashboardApi}=require('./dashboard-api');
+// Discord Bot - flache Struktur, kein Ordner-Scan.
+//
+// STATUS-HINWEIS ("lilaner Punkt") - v2 Fix:
+// Die Vorversion setzte ZWEI Aktivitäten gleichzeitig (Watching + Streaming).
+// Berichte/Community-Threads zu genau diesem Verhalten zeigen, dass Discord
+// bei mehreren Aktivitäten nicht zuverlässig die lilane Streaming-Badge
+// anzeigt - oft gewinnt die zuerst gesendete Aktivität, oder der Client
+// zeigt gar keine Badge. Jetzt wird NUR EINE Aktivität vom Typ "Streaming"
+// gesetzt (Name = Website-Text, damit die Website trotzdem sichtbar bleibt:
+// "Streaming https://...").
+//
+// WICHTIG (von Discord selbst so vorgegeben, nicht änderbar): Die "url" MUSS
+// zu twitch.tv oder youtube.com gehören und exakt wie eine echte URL
+// aussehen (inkl. "https://www."), sonst wird die Badge nicht lila, sondern
+// bleibt grün. Anpassbar über STREAM_URL in der .env.
 
-const LOCK_FILE=path.join(__dirname,'bot.lock');
-function alive(pid){try{process.kill(pid,0);return true;}catch{return false;}}
-function acquireLock(){
-  try{fs.writeFileSync(LOCK_FILE,String(process.pid),{flag:'wx'});return;}
-  catch(e){if(e.code!=='EEXIST')throw e;}
-  const pid=parseInt(fs.readFileSync(LOCK_FILE,'utf8').trim(),10);
-  if(pid&&alive(pid)){console.error(`❌ Bot läuft bereits (PID ${pid}).`);process.exit(1);}
-  fs.writeFileSync(LOCK_FILE,String(process.pid),'utf8');
+const fs = require('fs');
+const path = require('path');
+const { Client, GatewayIntentBits, ActivityType, Events, Collection, Options } = require('discord.js');
+
+const config = require('./config');
+const commandList = require('./commands');
+const { OPEN_BUTTON_ID, CLOSE_BUTTON_ID, handleOpenTicket, handleCloseTicket } = require('./commands-tickets');
+const http = require('http');
+const legacySupport = require('./legacy-support');
+const { handleAutoModCheck } = require('./automod-filter');
+const spotify = require('./spotify');
+const storage = require('./storage');
+
+// ---------------------------------------------------------------------------
+// BUGFIX "unendliche/doppelte Nachrichten": Die wahrscheinlichste Ursache
+// war, dass der Bot-PROZESS zweimal gleichzeitig lief (z.B. weil ein alter
+// Prozess beim Neustart nicht beendet wurde). Discord schickt Nachrichten-
+// und Interaktions-Events an JEDE aktive Verbindung mit demselben Token -
+// bei zwei laufenden Prozessen wird deshalb jede Aktion zweimal ausgeführt
+// (doppelte DMs, doppelte Support-Anfragen, etc.).
+//
+// Diese einfache Sperrdatei verhindert das: Beim Start wird geprüft, ob
+// bereits ein anderer, noch laufender Prozess eine bot.lock-Datei hält.
+// Falls ja, wird der Start abgebrochen und eine klare Fehlermeldung
+// ausgegeben, statt dass zwei Instanzen gleichzeitig laufen.
+// ---------------------------------------------------------------------------
+const LOCK_FILE = path.join(__dirname, 'bot.lock');
+
+function isProcessAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return false; // Prozess existiert nicht (mehr)
+  }
 }
-function releaseLock(){try{if(fs.existsSync(LOCK_FILE))fs.unlinkSync(LOCK_FILE);}catch{}}
-acquireLock(); process.on('exit',releaseLock);
-for(const sig of ['SIGINT','SIGTERM'])process.on(sig,()=>{releaseLock();process.exit(0);});
 
-if(!process.env.DISCORD_TOKEN){console.error('DISCORD_TOKEN fehlt.');process.exit(1);}
+function acquireLock() {
+  try {
+    // 'wx' = exklusiv erstellen: schlägt ATOMAR fehl, wenn die Datei schon
+    // existiert. Das verhindert die Race Condition der Vorversion, bei der
+    // zwei Prozesse, die exakt gleichzeitig starten, beide den
+    // existsSync()-Check bestehen könnten, bevor einer von ihnen schreibt.
+    fs.writeFileSync(LOCK_FILE, String(process.pid), { flag: 'wx' });
+    return; // Erfolgreich als einziger Prozess registriert.
+  } catch (err) {
+    if (err.code !== 'EEXIST') throw err; // unerwarteter Fehler -> weiterwerfen
+  }
 
-const client=new Client({
-  intents:[GatewayIntentBits.Guilds,GatewayIntentBits.GuildMembers,GatewayIntentBits.GuildMessages,GatewayIntentBits.MessageContent,GatewayIntentBits.DirectMessages],
-  partials:[Partials.Channel],
-  makeCache:Options.cacheWithLimits({
-    MessageManager:50,ReactionManager:0,PresenceManager:0,GuildMemberManager:200,ThreadManager:25,
-    GuildBanManager:0,GuildInviteManager:0,GuildScheduledEventManager:0,StageInstanceManager:0,VoiceStateManager:0,
-    ApplicationCommandManager:0,AutoModerationRuleManager:0
+  // Datei existiert bereits - prüfen, ob der darin stehende Prozess noch lebt.
+  const existingPid = parseInt(fs.readFileSync(LOCK_FILE, 'utf8').trim(), 10);
+  if (!Number.isNaN(existingPid) && isProcessAlive(existingPid)) {
+    console.error(
+      `❌ Der Bot läuft bereits in einem anderen Prozess auf DIESER Maschine (PID ${existingPid})!\n` +
+        'Genau DAS verursacht doppelte/"unendliche" Nachrichten (Discord schickt Events an beide Prozesse).\n' +
+        `Bitte beende den anderen Prozess (z.B. "kill ${existingPid}" oder den Task-Manager) und starte danach neu.\n` +
+        `Falls du sicher bist, dass kein anderer Prozess läuft, lösche einfach die Datei "bot.lock" und starte erneut.\n\n` +
+        `⚠️ WICHTIG: Diese Sperre schützt nur VOR DIESER MASCHINE. Läuft derselbe Bot-Token zusätzlich auf\n` +
+        `einem anderen Server/Hosting-Dienst (Railway, Replit, VPS, ein zweiter Laptop, ...), erkennt diese\n` +
+        `Sperre das NICHT - dort würde jede Aktion trotzdem doppelt ausgeführt. Bitte prüfen!`
+    );
+    process.exit(1);
+  }
+
+  // Verwaiste Lock-Datei (Prozess existiert nicht mehr) - überschreiben.
+  fs.writeFileSync(LOCK_FILE, String(process.pid), 'utf8');
+}
+
+function releaseLock() {
+  try {
+    if (fs.existsSync(LOCK_FILE)) fs.unlinkSync(LOCK_FILE);
+  } catch (err) {
+    // Ignorieren - beim Herunterfahren nicht kritisch.
+  }
+}
+
+acquireLock();
+process.on('exit', releaseLock);
+process.on('SIGINT', () => {
+  releaseLock();
+  process.exit(0);
+});
+process.on('SIGTERM', () => {
+  releaseLock();
+  process.exit(0);
+});
+
+const { DISCORD_TOKEN } = process.env;
+
+if (!DISCORD_TOKEN) {
+  console.error('Fehler: DISCORD_TOKEN fehlt in der .env Datei. Bot kann nicht starten.');
+  process.exit(1);
+}
+
+// WICHTIG zu den Intents:
+// - Guilds: Grundvoraussetzung für Slash-Commands.
+// - GuildMessages + MessageContent: nötig, damit der Bot den Text von
+//   Nachrichten in Servern lesen kann (für den "!support"-Text-Befehl).
+//   MessageContent ist ein PRIVILEGIERTER Intent - im Discord Developer
+//   Portal unter "Bot" -> "Privileged Gateway Intents" -> "MESSAGE CONTENT
+//   INTENT" aktivieren, sonst ist message.content immer leer!
+// - DirectMessages wird BEWUSST NICHT angefordert: Dadurch bekommt der Bot
+//   gar keine Gateway-Events für DMs von Nutzern - er kann also technisch
+//   keine DMs "empfangen" bzw. verarbeiten. Senden von DMs (z.B. bei /warn)
+//   funktioniert davon unabhängig weiterhin, siehe dm-notify.js.
+// ---------------------------------------------------------------------------
+// RAM-OPTIMIERUNG (Ziel: zuverlässig unter 2GB RAM laufen, Host nicht
+// einfrieren lassen):
+//
+// discord.js cacht standardmäßig sehr viel (jede gesehene Nachricht, jeden
+// Member, jede Reaction, ...) - bei Servern mit vielen Nachrichten/Mitgliedern
+// wächst der Speicherverbrauch dadurch unbegrenzt. Wir schränken das gezielt
+// auf das ein, was der Bot tatsächlich braucht:
+// - Nachrichten: nur die letzten 50 pro Kanal im Cache behalten (für /clear,
+//   /purge-user reicht ein frischer fetch() ohnehin, der Cache ist nur ein
+//   Beschleuniger).
+// - Reactions/Presences/Stage-Instanzen/Scheduled-Events/Invites/Bans/
+//   Voice-States: wird von diesem Bot NICHT genutzt -> komplett deaktiviert
+//   (0 = nichts cachen).
+// - Member-Cache: auf 200 pro Server begrenzt (Berechtigungsprüfungen laufen
+//   ohnehin meist über frische fetchMe()-Aufrufe, siehe commands-tickets.js).
+//
+// Zusätzlich: "sweepers" räumen periodisch alte, nicht mehr benötigte
+// Nachrichten aus dem Cache, statt dass er nur wächst.
+// ---------------------------------------------------------------------------
+const client = new Client({
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
+  makeCache: Options.cacheWithLimits({
+    MessageManager: 50,
+    ReactionManager: 0,
+    PresenceManager: 0,
+    GuildMemberManager: 200,
+    ThreadManager: 25,
+    GuildBanManager: 0,
+    GuildInviteManager: 0,
+    GuildScheduledEventManager: 0,
+    StageInstanceManager: 0,
+    VoiceStateManager: 0,
+    ApplicationCommandManager: 0,
+    AutoModerationRuleManager: 0,
   }),
-  sweepers:{messages:{interval:1800,lifetime:900},threads:{interval:3600,lifetime:3600}}
+  sweepers: {
+    messages: {
+      interval: 1800, // alle 30 Minuten prüfen
+      lifetime: 900, // Nachrichten älter als 15 Minuten aus dem Cache entfernen
+    },
+    threads: {
+      interval: 3600,
+      lifetime: 3600,
+    },
+  },
 });
-client.commands=new Collection();
-for(const command of commandList){
-  if(command?.data&&typeof command.execute==='function'){
-    if(client.commands.has(command.data.name)) console.error(`❌ Doppelte Command-Definition: ${command.data.name}`);
-    client.commands.set(command.data.name,command);
+
+client.commands = new Collection();
+for (const command of commandList) {
+  if (!command || !command.data || typeof command.execute !== 'function') {
+    console.warn('Warnung: Ein Command-Modul ist ungültig (fehlt data oder execute) - wird übersprungen.');
+    continue;
   }
+  client.commands.set(command.data.name, command);
 }
-console.log(`🚀 ${client.commands.size} Commands geladen: ${[...client.commands.keys()].join(', ')}`);
 
-client.once(Events.ClientReady,async ready=>{
-  console.log(`Eingeloggt als ${ready.user.tag} auf ${ready.guilds.cache.size} Servern.`);
-  applyPresence(ready);
-  try{
-    const result=await syncCommands(client);
-    const guildOk=(result.guilds||[]).filter(x=>!x.error).length;
-    const guildFailed=(result.guilds||[]).filter(x=>x.error).length;
-    console.log(`✅ Slash-Commands synchronisiert: ${result.count} Commands · ${guildOk} Guild(s) erfolgreich${guildFailed?` · ${guildFailed} Guild(s) fehlgeschlagen`:''} · ${result.scope}`);
-  }catch(err){console.error('❌ Slash-Command-Synchronisation fehlgeschlagen:',err.message);}
-  updateServerCount();
-  setInterval(updateServerCount,15*60*1000);
-  refreshAllBoards();
-  setInterval(refreshAllBoards,24*60*60*1000);
-});
+console.log('='.repeat(60));
+console.log(`🚀 Bot-Prozess gestartet - PID: ${process.pid}`);
+console.log(`📦 Node.js: ${process.version}`);
+console.log(`${client.commands.size} Command(s) geladen: ${[...client.commands.keys()].join(', ')}`);
+console.log(
+  'ℹ️ Falls hier ein Befehl fehlt, den du gerade hinzugefügt hast: ' +
+    'Dieser Prozess wurde VOR der Änderung gestartet - Bot komplett neu starten ' +
+    '(nicht nur "npm run deploy"). Prüfe zusätzlich mit "ps aux | grep node" ' +
+    '(Linux/Mac) bzw. "tasklist | findstr node" (Windows), ob nur EIN Prozess läuft.'
+);
+console.log('='.repeat(60));
 
-let lastPresenceCount=-1;
-function updateServerCount(){
-  const count=client.guilds.cache.size;
-  if(count===lastPresenceCount)return;
-  lastPresenceCount=count;
-  // Ein Presence-Update nur bei tatsächlicher Serverzahl-Änderung.
-  // Eine einzelne Streaming-Aktivität bleibt erhalten; ihr sichtbarer Name
-  // ist die Serverzahl und die URL bleibt auf den konfigurierten Twitch-Account.
-  const global=storage.getGuildSettings('_global').presenceSettings||{};
-  client.user.setPresence({
-    status: global.status || config.presence.defaultStatus,
-    activities: [{
-      name: global.streaming===false ? `${count} Server` : `${global.twitchName || config.presence.twitchName} · ${count} Server`,
-      type: global.streaming===false ? 0 : 1,
-      ...(global.streaming===false ? {} : {url: config.presence.streamUrl})
-    }]
+function setPresence(readyClient) {
+  const streamUrl = process.env.STREAM_URL || 'https://www.twitch.tv/0tylxrrrr';
+
+  readyClient.user.setPresence({
+    status: 'online',
+    activities: [{ name: config.links.website, type: ActivityType.Streaming, url: streamUrl }],
   });
 }
-async function refreshAllBoards(){
-  for(const guild of client.guilds.cache.values()){
-    const s=storage.getGuildSettings(guild.id);
-    if(s.xpBoardChannelId) await refreshLeaderboardMessage(guild,s.xpBoardChannelId);
+
+client.once(Events.ClientReady, (readyClient) => {
+  console.log(`Eingeloggt als ${readyClient.user.tag}`);
+  setPresence(readyClient);
+});
+
+// Zusätzliche Absicherung: jede Interaktions-ID (Slash-Command ODER Button)
+// wird nur EINMAL verarbeitet - schützt zusätzlich zur Prozess-Sperre gegen
+// jede Art von doppelter Zustellung durch diesen einen Prozess.
+const processedInteractionIds = new Set();
+function markInteractionProcessed(id) {
+  processedInteractionIds.add(id);
+  if (processedInteractionIds.size > 1000) {
+    const first = processedInteractionIds.values().next().value;
+    processedInteractionIds.delete(first);
   }
 }
 
-const processed=new Set();
-function once(id){if(processed.has(id))return false;processed.add(id);if(processed.size>2000)processed.delete(processed.values().next().value);return true;}
+client.on(Events.InteractionCreate, async (interaction) => {
+  if (processedInteractionIds.has(interaction.id)) {
+    console.warn(`Doppelte Interaktion ignoriert: ${interaction.id} (/${interaction.commandName || interaction.customId})`);
+    return;
+  }
+  markInteractionProcessed(interaction.id);
 
-client.on(Events.InteractionCreate,async interaction=>{
-  if(!once(interaction.id))return;
-  try{
-    if(interaction.isChatInputCommand()){
-      const cmd=client.commands.get(interaction.commandName);
-      if(!cmd){await interaction.reply({content:'❌ Unbekannter Befehl. Die Command-Synchronisation läuft möglicherweise noch.',ephemeral:true}).catch(()=>{});return;}
-      if(cmd.requiredAccess==='superuser'){
-        if(interaction.user.id!==config.superuserId){await interaction.reply({content:'❌ Keine Berechtigung.',ephemeral:true});return;}
-      }else if(cmd.requiredAccess && !(await requireAccess(interaction,cmd.requiredAccess))){return;}
-      await cmd.execute(interaction);
-      if(interaction.guild && cmd.requiredAccess) await logBotEvent(interaction.guild,'Bot-Aktion',`/${interaction.commandName} von ${interaction.user.tag} (${interaction.user.id})`);
+  try {
+    if (interaction.isChatInputCommand()) {
+      const command = client.commands.get(interaction.commandName);
+      if (!command) {
+        console.warn(`Unbekannter Command aufgerufen: /${interaction.commandName}`);
+        await interaction.reply({ content: 'Unbekannter Befehl.', ephemeral: true }).catch(() => {});
+        return;
+      }
+      await command.execute(interaction);
       return;
     }
-    if(
-      interaction.isButton() ||
-      interaction.isStringSelectMenu() ||
-      interaction.isModalSubmit()
-    ){
-      if(await handleAppearanceComponent(interaction)) return;
-      if(interaction.isButton() && interaction.customId===OPEN_BUTTON_ID){await handleOpenTicket(interaction);return;}
-      if(interaction.isButton() && interaction.customId===CLOSE_BUTTON_ID){await handleCloseTicket(interaction);return;}
+
+    if (interaction.isButton()) {
+      if (interaction.customId === OPEN_BUTTON_ID) {
+        await handleOpenTicket(interaction);
+        return;
+      }
+      if (interaction.customId === CLOSE_BUTTON_ID) {
+        await handleCloseTicket(interaction);
+        return;
+      }
     }
-  }catch(err){
-    console.error('Fehler bei Interaktion:',err);
-    const payload={content:'❌ Beim Ausführen dieser Aktion ist ein Fehler aufgetreten.',ephemeral:true};
-    if(interaction.replied||interaction.deferred) await interaction.followUp(payload).catch(()=>{}); else await interaction.reply(payload).catch(()=>{});
-    logBotEvent(interaction.guild,'Fehler',err.message);
+  } catch (error) {
+    console.error('Fehler beim Verarbeiten einer Interaktion:', error);
+
+    const errorPayload = {
+      content: 'Beim Ausführen dieser Aktion ist ein Fehler aufgetreten.',
+      ephemeral: true,
+    };
+
+    if (interaction.replied || interaction.deferred) {
+      await interaction.followUp(errorPayload).catch(() => {});
+    } else {
+      await interaction.reply(errorPayload).catch(() => {});
+    }
   }
 });
 
-client.on(Events.GuildMemberAdd,async member=>{
-  try{await handleGuildMemberAdd(member);await logBotEvent(member.guild,'User Join',`${member.user.tag} (${member.id})`);}
-  catch(err){console.error('Welcome-Fehler:',err);await logBotEvent(member.guild,'Fehler',err.message);}
-});
-client.on(Events.GuildMemberRemove,member=>logBotEvent(member.guild,'User Leave',`${member.user?.tag||member.id} (${member.id})`));
+client.on(Events.MessageCreate, async (message) => {
+  try {
+    const wasBlocked = await handleAutoModCheck(message);
+    if (wasBlocked) return; // Nachricht wurde gelöscht - nicht mehr weiterverarbeiten (z.B. nicht an !support)
 
-client.on(Events.MessageCreate,async message=>{
-  try{
-    if(!message.author.bot){
-      const blocked=await handleAutoModCheck(message);
-      if(blocked)return;
-      if(message.mentions.has(client.user)) { await handleMention(message,client.user); return; }
-      if(message.guild) await handleMessageXp(message);
-    }
     await legacySupport.handleMessage(message);
-  }catch(err){console.error('Fehler bei Nachricht:',err);await logBotEvent(message.guild,'Fehler',err.message);}
+  } catch (error) {
+    console.error('Fehler beim Verarbeiten einer Nachricht:', error);
+  }
 });
 
-async function logBotEvent(guild,title,text){
-  if(!guild)return;
-  const s=storage.getGuildSettings(guild.id), id=s.logChannelId;
-  if(!id)return;
-  const ch=guild.channels.cache.get(id);
-  if(ch?.isTextBased()) await ch.send(`**${title}** — ${String(text).slice(0,1800)}`).catch(()=>{});
-}
-client.logBotEvent=logBotEvent;
+client.on(Events.Error, (error) => {
+  console.error('Discord-Client-Fehler:', error);
+});
 
-client.on(Events.Error,e=>console.error('Discord-Client-Fehler:',e.message));
-process.on('unhandledRejection',e=>console.error('Unbehandelte Promise-Ablehnung:',e?.message||e));
+process.on('unhandledRejection', (error) => {
+  console.error('Unbehandelte Promise-Ablehnung:', error);
+});
 
-function startHttpServers(){
-  const dashboardPort=parseInt(process.env.DASHBOARD_API_PORT||'8090',10);
-  const dashboardServer=http.createServer(async(req,res)=>{
-    const url=new URL(req.url,`http://localhost:${dashboardPort}`);
-    if(url.pathname.startsWith('/dashboard-api/')){
-      try{await handleDashboardApi(req,res,url,client);}catch(err){console.error('Dashboard-API:',err.message);res.writeHead(500,{'Content-Type':'application/json'});res.end(JSON.stringify({error:'server_error'}));}
+// ---------------------------------------------------------------------------
+// Spotify-OAuth-Callback-Server: nimmt Spotifys Weiterleitung nach der
+// Login-Bestätigung entgegen und tauscht den Code gegen Access-/Refresh-
+// Token. Läuft nur, wenn SPOTIFY_CLIENT_ID/SECRET in der .env gesetzt sind.
+// ---------------------------------------------------------------------------
+if (spotify.isConfigured()) {
+  const port = parseInt(process.env.SPOTIFY_CALLBACK_PORT || '8888', 10);
+
+  const server = http.createServer(async (req, res) => {
+    const url = new URL(req.url, `http://localhost:${port}`);
+
+    if (url.pathname !== '/callback') {
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('Not found');
       return;
     }
-    if(spotify.isConfigured() && url.pathname==='/callback'){
-      const code=url.searchParams.get('code'),state=url.searchParams.get('state'),error=url.searchParams.get('error');
-      res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'});
-      if(error){res.end('<h1>Spotify-Verknüpfung abgebrochen.</h1>');return;}
-      const discordUserId=spotify.consumeState(state);
-      if(!discordUserId){res.end('<h1>Ungültiger oder abgelaufener Link.</h1>');return;}
-      try{
-        const tokenData=await spotify.exchangeCodeForToken(code);
-        storage.setSpotifyTokens(discordUserId,{accessToken:tokenData.access_token,refreshToken:tokenData.refresh_token,expiresAt:Date.now()+tokenData.expires_in*1000});
-        res.end('<h1>✅ Spotify erfolgreich verknüpft.</h1>');
-      }catch(err){console.error('Spotify OAuth Fehler:',err.message);res.end('<h1>❌ Spotify-Fehler.</h1>');}
+
+    const code = url.searchParams.get('code');
+    const state = url.searchParams.get('state');
+    const error = url.searchParams.get('error');
+
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+
+    if (error) {
+      res.end('<h1>Spotify-Verknüpfung abgebrochen.</h1><p>Du kannst dieses Fenster schließen.</p>');
       return;
     }
-    res.writeHead(404);res.end('Not found');
+
+    const discordUserId = spotify.consumeState(state);
+    if (!discordUserId) {
+      res.end('<h1>❌ Ungültiger oder abgelaufener Link.</h1><p>Bitte führe /spotify-login erneut aus.</p>');
+      return;
+    }
+
+    try {
+      const tokenData = await spotify.exchangeCodeForToken(code);
+      storage.setSpotifyTokens(discordUserId, {
+        accessToken: tokenData.access_token,
+        refreshToken: tokenData.refresh_token,
+        expiresAt: Date.now() + tokenData.expires_in * 1000,
+      });
+      res.end('<h1>✅ Spotify erfolgreich verknüpft!</h1><p>Du kannst dieses Fenster schließen und zu Discord zurückkehren.</p>');
+    } catch (err) {
+      console.error('Fehler beim Spotify-Token-Austausch:', err);
+      res.end(`<h1>❌ Fehler</h1><p>${err.message}</p>`);
+    }
   });
-  dashboardServer.listen(dashboardPort,()=>console.log(`🌐 Dashboard-API auf Port ${dashboardPort}`));
-}
-startHttpServers();
 
-client.login(process.env.DISCORD_TOKEN);
+  server.listen(port, () => {
+    console.log(`🎧 Spotify-OAuth-Callback-Server läuft auf Port ${port} (nur für /callback).`);
+  });
+}
+
+client.login(DISCORD_TOKEN);
