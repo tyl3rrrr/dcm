@@ -32,12 +32,16 @@ const settings = {
         .setName('log-channel')
         .setDescription('Legt den Kanal fest, in dem Mod-/Ticket-Aktionen geloggt werden')
         .addChannelOption((opt) =>
-          opt
-            .setName('kanal')
-            .setDescription('Der Log-Kanal')
-            .addChannelTypes(ChannelType.GuildText)
-            .setRequired(true)
+          opt.setName('kanal').setDescription('Der Log-Kanal').addChannelTypes(ChannelType.GuildText).setRequired(true)
         )
+    )
+    .addSubcommand((sub) =>
+      sub.setName('admin-role').setDescription('Konfigurierte Administratorrolle')
+        .addRoleOption(opt=>opt.setName('rolle').setDescription('Admin-Rolle').setRequired(true))
+    )
+    .addSubcommand((sub) =>
+      sub.setName('moderator-role').setDescription('Konfigurierte Moderatorrolle')
+        .addRoleOption(opt=>opt.setName('rolle').setDescription('Moderator-Rolle').setRequired(true))
     ),
 
   async execute(interaction) {
@@ -52,7 +56,9 @@ const settings = {
         .addFields(
           { name: 'Ticket-Kategorie', value: s.ticketCategoryId ? `<#${s.ticketCategoryId}>` : 'Nicht gesetzt' },
           { name: 'Support-Rolle', value: s.ticketStaffRoleId ? `<@&${s.ticketStaffRoleId}>` : 'Nicht gesetzt' },
-          { name: 'Log-Kanal', value: s.logChannelId ? `<#${s.logChannelId}>` : 'Nicht gesetzt' }
+          { name: 'Log-Kanal', value: s.logChannelId ? `<#${s.logChannelId}>` : 'Nicht gesetzt' },
+          { name: 'Admin-Rolle', value: s.adminRoleId ? `<@&${s.adminRoleId}>` : 'Nicht gesetzt' },
+          { name: 'Moderator-Rolle', value: s.moderatorRoleId ? `<@&${s.moderatorRoleId}>` : 'Nicht gesetzt' }
         );
       await interaction.reply({ embeds: [embed], ephemeral: true });
       return;
@@ -76,6 +82,18 @@ const settings = {
       const channel = interaction.options.getChannel('kanal');
       storage.setGuildSetting(guildId, 'logChannelId', channel.id);
       await interaction.reply({ content: `✅ Log-Kanal gesetzt auf **${channel.toString()}**.`, ephemeral: true });
+      return;
+    }
+    if (sub === 'admin-role') {
+      const role = interaction.options.getRole('rolle');
+      storage.setGuildSetting(guildId, 'adminRoleId', role.id);
+      await interaction.reply({ content: `✅ Admin-Rolle gesetzt auf **${role.name}**.`, ephemeral: true });
+      return;
+    }
+    if (sub === 'moderator-role') {
+      const role = interaction.options.getRole('rolle');
+      storage.setGuildSetting(guildId, 'moderatorRoleId', role.id);
+      await interaction.reply({ content: `✅ Moderator-Rolle gesetzt auf **${role.name}**.`, ephemeral: true });
       return;
     }
   },

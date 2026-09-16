@@ -50,8 +50,8 @@ const uptime = {
   },
 };
 
-const status = {
-  data: new SlashCommandBuilder().setName('status').setDescription('Prüft, ob die Website erreichbar ist'),
+const websiteStatus = {
+  data: new SlashCommandBuilder().setName('website-status').setDescription('Prüft, ob die Website erreichbar ist'),
   async execute(interaction) {
     await interaction.deferReply();
     const url = config.links.website;
@@ -177,73 +177,30 @@ const botinfo = {
 // (wird von commands.js mit der finalen Liste verdrahtet, um Zirkelbezüge zu vermeiden).
 function buildHelpCommand(getAllCommands) {
   return {
-    data: new SlashCommandBuilder().setName('help').setDescription('Zeigt alle verfügbaren Befehle'),
+    data: new SlashCommandBuilder().setName('help').setDescription('Zeigt automatisch alle verfügbaren Befehle'),
     async execute(interaction) {
-      const all = getAllCommands();
-
-      const categories = {
-        '📌 Allgemein': ['antimdm', 'web', 'uptime', 'status', 'changelog', 'links', 'botinfo', 'ping', 'help'],
-        '🛡️ Moderation': [
-          'kick',
-          'ban',
-          'timeout',
-          'warn',
-          'clear',
-          'slowmode',
-          'lock',
-          'unlock',
-          'nickname',
-          'role',
-          'purge-user',
-          'say',
-          'automod-words',
-        ],
-        '🎫 Tickets': ['ticket-panel'],
-        '🧰 Sonstiges': [
-          'userinfo',
-          'serverinfo',
-          'avatar',
-          'poll',
-          'remindme',
-          'suggest',
-          'coinflip',
-          'dice',
-          '8ball',
-          'membercount',
-          'roleinfo',
-        ],
-        '👨‍💻 Developer': ['base64', 'hash', 'json', 'timestamp', 'uuid', 'snowflake', 'regex-test'],
-        '🎧 Spotify': ['spotify-login', 'spotify-nowplaying', 'spotify-play', 'spotify-pause', 'spotify-skip', 'spotify-search'],
-        '⚙️ Einstellungen & Admin': ['settings', 'reload'],
-      };
-
+      const all = getAllCommands().filter(c => c?.data);
+      const groups = new Map();
+      for (const cmd of all) {
+        const category = cmd.category || '🧰 Sonstiges';
+        if (!groups.has(category)) groups.set(category, []);
+        const json = cmd.data.toJSON();
+        groups.get(category).push(`\`/${json.name}\` — ${json.description || ''}`);
+      }
       const embed = new EmbedBuilder()
         .setTitle('📖 Befehlsübersicht')
         .setColor(0x5865f2)
-        .setFooter({
-          text: 'Außerdem: !support <Anliegen> und !support config (Text-Befehl, kein Slash-Command)',
-        });
-
-      for (const [category, names] of Object.entries(categories)) {
-        const lines = names
-          .map((name) => {
-            const cmd = all.find((c) => c.data.name === name);
-            if (!cmd) return null;
-            const desc = cmd.data.toJSON().description || '';
-            return `\`/${name}\` — ${desc}`;
-          })
-          .filter(Boolean);
-        if (lines.length > 0) {
-          embed.addFields({ name: category, value: lines.join('\n') });
-        }
+        .setFooter({ text: 'Automatisch aus der registrierten Command-Liste erzeugt · !support bleibt als Text-Befehl verfügbar' });
+      for (const [category, lines] of groups) {
+        lines.sort((a,b)=>a.localeCompare(b,'de'));
+        if (lines.length) embed.addFields({ name: category, value: lines.join('\n').slice(0,1024) });
       }
-
       await interaction.reply({ embeds: [embed], ephemeral: true });
     },
   };
 }
 
 module.exports = {
-  simpleCommands: [antimdm, web, uptime, status, changelogCmd, linksCmd, reloadCmd, botinfo],
+  simpleCommands: [antimdm, web, uptime, websiteStatus, changelogCmd, linksCmd, reloadCmd, botinfo],
   buildHelpCommand,
 };

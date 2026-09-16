@@ -1,0 +1,1 @@
+<?php require __DIR__.'/dashboard-config.php'; $_SESSION=[]; session_destroy(); header('Location: dashboard-index.php'); exit; ?>
