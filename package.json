@@ -1,6 +1,6 @@
 {
   "name": "tylxrrrr-discord-bot",
-  "version": "8.2.0",
+  "version": "8.2.1",
   "description": "Discord Bot v8.2 mit serverbezogener Appearance und echtem Discord AutoMod",
   "main": "index.js",
   "type": "commonjs",

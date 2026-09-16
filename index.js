@@ -56,8 +56,10 @@ client.once(Events.ClientReady,async ready=>{
   console.log(`Eingeloggt als ${ready.user.tag} auf ${ready.guilds.cache.size} Servern.`);
   applyPresence(ready);
   try{
-    const result=await syncCommands();
-    console.log(`✅ Slash-Commands synchronisiert: ${result.count} (${result.scope})`);
+    const result=await syncCommands(client);
+    const guildOk=(result.guilds||[]).filter(x=>!x.error).length;
+    const guildFailed=(result.guilds||[]).filter(x=>x.error).length;
+    console.log(`✅ Slash-Commands synchronisiert: ${result.count} Commands · ${guildOk} Guild(s) erfolgreich${guildFailed?` · ${guildFailed} Guild(s) fehlgeschlagen`:''} · ${result.scope}`);
   }catch(err){console.error('❌ Slash-Command-Synchronisation fehlgeschlagen:',err.message);}
   updateServerCount();
   setInterval(updateServerCount,15*60*1000);

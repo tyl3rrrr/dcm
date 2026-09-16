@@ -244,3 +244,12 @@ Ein vollständiger Live-Discord-/OpenAI-Test konnte in dieser Sandbox nicht ausg
 - Das AutoMod-Badge wird von Discord vergeben; der Bot kann nur echte Regeln zählen bzw. AutoMod über die API verwenden.
 - Ein permanenter XP-Invite kann nicht garantiert werden. Das Dashboard/Leaderboard erstellt nur einen Invite, wenn der Bot im Zielserver `CREATE_INSTANT_INVITE` hat; andernfalls wird der Servername ohne Link angezeigt.
 - JSON ist für einen einzelnen Bot-Prozess praktikabel, aber für sehr große XP-Lasten wäre eine echte Datenbank (SQLite/PostgreSQL/MySQL) langfristig robuster.
+
+## Slash-Command-Synchronisation (V8.2.1)
+
+Neue Commands werden standardmäßig global **und zusätzlich auf allen Guilds, auf denen der Bot verbunden ist**, synchronisiert. Guild-Commands sind dadurch sofort verfügbar; globale Commands können Discord-seitig weiterhin verzögert erscheinen.
+
+Optional kann über `COMMAND_SYNC_MODE` gesteuert werden:
+- `all` (Standard): global + alle verbundenen Guilds
+- `global`: nur global
+- `single`: nur `GUILD_ID`
