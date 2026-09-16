@@ -22,7 +22,11 @@ const { Client, GatewayIntentBits, ActivityType, Events, Collection, Options } =
 const config = require('./config');
 const commandList = require('./commands');
 const { OPEN_BUTTON_ID, CLOSE_BUTTON_ID, handleOpenTicket, handleCloseTicket } = require('./commands-tickets');
+const http = require('http');
 const legacySupport = require('./legacy-support');
+const { handleAutoModCheck } = require('./automod-filter');
+const spotify = require('./spotify');
+const storage = require('./storage');
 
 // ---------------------------------------------------------------------------
 // BUGFIX "unendliche/doppelte Nachrichten": Die wahrscheinlichste Ursache
@@ -49,19 +53,33 @@ function isProcessAlive(pid) {
 }
 
 function acquireLock() {
-  if (fs.existsSync(LOCK_FILE)) {
-    const existingPid = parseInt(fs.readFileSync(LOCK_FILE, 'utf8').trim(), 10);
-    if (!Number.isNaN(existingPid) && isProcessAlive(existingPid)) {
-      console.error(
-        `❌ Der Bot läuft bereits in einem anderen Prozess (PID ${existingPid})!\n` +
-          'Genau DAS verursacht doppelte/"unendliche" Nachrichten (Discord schickt Events an beide Prozesse).\n' +
-          `Bitte beende den anderen Prozess (z.B. "kill ${existingPid}" oder den Task-Manager) und starte danach neu.\n` +
-          `Falls du sicher bist, dass kein anderer Prozess läuft, lösche einfach die Datei "bot.lock" und starte erneut.`
-      );
-      process.exit(1);
-    }
-    // Alte, verwaiste Lock-Datei (Prozess existiert nicht mehr) - überschreiben.
+  try {
+    // 'wx' = exklusiv erstellen: schlägt ATOMAR fehl, wenn die Datei schon
+    // existiert. Das verhindert die Race Condition der Vorversion, bei der
+    // zwei Prozesse, die exakt gleichzeitig starten, beide den
+    // existsSync()-Check bestehen könnten, bevor einer von ihnen schreibt.
+    fs.writeFileSync(LOCK_FILE, String(process.pid), { flag: 'wx' });
+    return; // Erfolgreich als einziger Prozess registriert.
+  } catch (err) {
+    if (err.code !== 'EEXIST') throw err; // unerwarteter Fehler -> weiterwerfen
   }
+
+  // Datei existiert bereits - prüfen, ob der darin stehende Prozess noch lebt.
+  const existingPid = parseInt(fs.readFileSync(LOCK_FILE, 'utf8').trim(), 10);
+  if (!Number.isNaN(existingPid) && isProcessAlive(existingPid)) {
+    console.error(
+      `❌ Der Bot läuft bereits in einem anderen Prozess auf DIESER Maschine (PID ${existingPid})!\n` +
+        'Genau DAS verursacht doppelte/"unendliche" Nachrichten (Discord schickt Events an beide Prozesse).\n' +
+        `Bitte beende den anderen Prozess (z.B. "kill ${existingPid}" oder den Task-Manager) und starte danach neu.\n` +
+        `Falls du sicher bist, dass kein anderer Prozess läuft, lösche einfach die Datei "bot.lock" und starte erneut.\n\n` +
+        `⚠️ WICHTIG: Diese Sperre schützt nur VOR DIESER MASCHINE. Läuft derselbe Bot-Token zusätzlich auf\n` +
+        `einem anderen Server/Hosting-Dienst (Railway, Replit, VPS, ein zweiter Laptop, ...), erkennt diese\n` +
+        `Sperre das NICHT - dort würde jede Aktion trotzdem doppelt ausgeführt. Bitte prüfen!`
+    );
+    process.exit(1);
+  }
+
+  // Verwaiste Lock-Datei (Prozess existiert nicht mehr) - überschreiben.
   fs.writeFileSync(LOCK_FILE, String(process.pid), 'utf8');
 }
 
@@ -185,7 +203,25 @@ client.once(Events.ClientReady, (readyClient) => {
   setPresence(readyClient);
 });
 
+// Zusätzliche Absicherung: jede Interaktions-ID (Slash-Command ODER Button)
+// wird nur EINMAL verarbeitet - schützt zusätzlich zur Prozess-Sperre gegen
+// jede Art von doppelter Zustellung durch diesen einen Prozess.
+const processedInteractionIds = new Set();
+function markInteractionProcessed(id) {
+  processedInteractionIds.add(id);
+  if (processedInteractionIds.size > 1000) {
+    const first = processedInteractionIds.values().next().value;
+    processedInteractionIds.delete(first);
+  }
+}
+
 client.on(Events.InteractionCreate, async (interaction) => {
+  if (processedInteractionIds.has(interaction.id)) {
+    console.warn(`Doppelte Interaktion ignoriert: ${interaction.id} (/${interaction.commandName || interaction.customId})`);
+    return;
+  }
+  markInteractionProcessed(interaction.id);
+
   try {
     if (interaction.isChatInputCommand()) {
       const command = client.commands.get(interaction.commandName);
@@ -226,9 +262,12 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
 client.on(Events.MessageCreate, async (message) => {
   try {
+    const wasBlocked = await handleAutoModCheck(message);
+    if (wasBlocked) return; // Nachricht wurde gelöscht - nicht mehr weiterverarbeiten (z.B. nicht an !support)
+
     await legacySupport.handleMessage(message);
   } catch (error) {
-    console.error('Fehler beim Verarbeiten einer Nachricht (!support):', error);
+    console.error('Fehler beim Verarbeiten einer Nachricht:', error);
   }
 });
 
@@ -239,5 +278,58 @@ client.on(Events.Error, (error) => {
 process.on('unhandledRejection', (error) => {
   console.error('Unbehandelte Promise-Ablehnung:', error);
 });
+
+// ---------------------------------------------------------------------------
+// Spotify-OAuth-Callback-Server: nimmt Spotifys Weiterleitung nach der
+// Login-Bestätigung entgegen und tauscht den Code gegen Access-/Refresh-
+// Token. Läuft nur, wenn SPOTIFY_CLIENT_ID/SECRET in der .env gesetzt sind.
+// ---------------------------------------------------------------------------
+if (spotify.isConfigured()) {
+  const port = parseInt(process.env.SPOTIFY_CALLBACK_PORT || '8888', 10);
+
+  const server = http.createServer(async (req, res) => {
+    const url = new URL(req.url, `http://localhost:${port}`);
+
+    if (url.pathname !== '/callback') {
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('Not found');
+      return;
+    }
+
+    const code = url.searchParams.get('code');
+    const state = url.searchParams.get('state');
+    const error = url.searchParams.get('error');
+
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+
+    if (error) {
+      res.end('<h1>Spotify-Verknüpfung abgebrochen.</h1><p>Du kannst dieses Fenster schließen.</p>');
+      return;
+    }
+
+    const discordUserId = spotify.consumeState(state);
+    if (!discordUserId) {
+      res.end('<h1>❌ Ungültiger oder abgelaufener Link.</h1><p>Bitte führe /spotify-login erneut aus.</p>');
+      return;
+    }
+
+    try {
+      const tokenData = await spotify.exchangeCodeForToken(code);
+      storage.setSpotifyTokens(discordUserId, {
+        accessToken: tokenData.access_token,
+        refreshToken: tokenData.refresh_token,
+        expiresAt: Date.now() + tokenData.expires_in * 1000,
+      });
+      res.end('<h1>✅ Spotify erfolgreich verknüpft!</h1><p>Du kannst dieses Fenster schließen und zu Discord zurückkehren.</p>');
+    } catch (err) {
+      console.error('Fehler beim Spotify-Token-Austausch:', err);
+      res.end(`<h1>❌ Fehler</h1><p>${err.message}</p>`);
+    }
+  });
+
+  server.listen(port, () => {
+    console.log(`🎧 Spotify-OAuth-Callback-Server läuft auf Port ${port} (nur für /callback).`);
+  });
+}
 
 client.login(DISCORD_TOKEN);

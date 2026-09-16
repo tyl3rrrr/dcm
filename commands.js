@@ -11,8 +11,11 @@ const core = require('./commands-core');
 const mod = require('./commands-mod');
 const extra = require('./commands-extra');
 const utility = require('./commands-utility');
+const dev = require('./commands-dev');
+const spotifyCmds = require('./commands-spotify');
 const { settings } = require('./commands-settings');
 const { ticketPanel } = require('./commands-tickets');
+const { automodWords } = require('./commands-automod-words');
 
 const withoutHelp = [
   ...core.simpleCommands,
@@ -40,8 +43,22 @@ const withoutHelp = [
   utility.serverinfo,
   utility.avatar,
   utility.poll,
+  dev.base64,
+  dev.hash,
+  dev.json,
+  dev.timestamp,
+  dev.uuid,
+  dev.snowflake,
+  dev.regexTest,
+  spotifyCmds.spotifyLogin,
+  spotifyCmds.nowplaying,
+  spotifyCmds.play,
+  spotifyCmds.pause,
+  spotifyCmds.skip,
+  spotifyCmds.search,
   settings,
   ticketPanel,
+  automodWords,
 ];
 
 // /help braucht die vollständige Liste (inkl. sich selbst) für die Anzeige,

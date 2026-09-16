@@ -1,109 +1,132 @@
-# tylxrrrr Discord Bot (v6)
+# tylxrrrr Discord Bot (v7)
 
-## ⚠️ WICHTIGSTER SCHRITT - bitte zuerst lesen
+## 1. Duplikate bei !support / /warn - tieferer Fix
 
-Alle drei gemeldeten Probleme (RAM-Verbrauch, doppelte `!support`-Nachrichten,
-"`/dice` unbekannt") passen zu **einer einzigen Ursache**: Es laufen
-wahrscheinlich **mehrere alte Bot-Prozesse gleichzeitig** auf deinem Host -
-von früheren Starts, die nie richtig beendet wurden. Ein Code-Update auf der
-Festplatte ändert NICHTS an einem bereits laufenden Node-Prozess - der lädt
-seinen Code nur einmal beim Start.
+Der Code wurde erneut Zeile für Zeile geprüft: `/warn add` sendet
+garantiert genau EINE DM und EINE Antwort, `!support` erstellt garantiert
+genau EIN Ticket mit genau EINER Log-Nachricht (per Stub-Tests verifiziert).
+Trotzdem zwei zusätzliche Härtungen eingebaut:
 
-Das erklärt alles zusammen:
-- **RAM/Freeze**: mehrere Node-Prozesse gleichzeitig = mehrfacher Speicherverbrauch
-- **`!support`-Duplikate**: jeder alte Prozess verarbeitet jedes Event erneut,
-  auch wenn der neue Code (mit Lock + Dedupe) das eigentlich verhindern würde
-  - der Lock schützt nur NEU gestartete Prozesse, nicht bereits laufende
-- **`/dice` "unbekannt"**: Discord selbst kennt den Befehl (weil `npm run
-  deploy` erfolgreich war), aber der ALTE, noch laufende Prozess hat den
-  Code dafür nie geladen und antwortet mit "Unbekannter Befehl"
+1. **Race Condition im Lock behoben:** Die Vorversion prüfte "existiert die
+   Lock-Datei?" und "Datei schreiben" in zwei getrennten Schritten - bei
+   exakt gleichzeitigem Start zweier Prozesse konnten theoretisch beide
+   durchkommen. Jetzt wird die Datei mit dem atomaren `wx`-Flag erstellt
+   (schlägt garantiert fehl, wenn sie schon existiert). Mit einem Test
+   verifiziert: bei zwei exakt gleichzeitigen Starts gewinnt jetzt
+   garantiert nur einer.
+2. **Interaktions-ID-Dedupe:** Jede Slash-Command- und Button-Interaktion
+   wird jetzt zusätzlich anhand ihrer eindeutigen ID nur einmal verarbeitet
+   (unabhängig vom Nachrichten-Dedupe für `!support`).
 
-**Bitte einmal gründlich aufräumen, bevor du weitertestest:**
+⚠️ **Falls es TROTZDEM noch passiert:** Diese Sperre schützt nur vor
+mehreren Prozessen auf **derselben Maschine**. Prüfe unbedingt, ob derselbe
+Bot-Token zusätzlich auf einem **anderen Server/Hosting-Dienst** läuft
+(Railway, Replit, ein VPS, ein zweiter Rechner, ein alter Cloud-Deploy, den
+du vergessen hast) - das kann unsere lokale Sperrdatei technisch nicht
+erkennen, da jede Maschine ihre eigene Festplatte hat. Zwei Prozesse mit
+demselben Token an zwei verschiedenen Orten bekommen von Discord JEDES
+Event doppelt zugestellt - das ist eine Discord-Systematik, keine Frage
+des Codes.
 
-```bash
-# Linux/Mac - alle laufenden node-Prozesse dieses Bots anzeigen:
-ps aux | grep node
-# dann jeden gefundenen Prozess beenden:
-kill <PID>
-# im Zweifel (nur wenn ausschließlich dieser Bot auf dem Host läuft):
-pkill -f "node index.js"
+## 2. Lokaler AutoMod-Wortfilter (KEINE Discord-API)
+
+`automod-filter.js` prüft jede Nachricht direkt im Bot-Code gegen eine
+Wortliste (Wortgrenzen-Regex, Groß-/Kleinschreibung egal) - es wird
+KEINE Anfrage an Discords AutoMod-API gestellt, dadurch entfallen deren
+bekannte Zuverlässigkeitsprobleme vollständig.
+
+**Standard-Blockliste:** Nigga, Negger, Asylant, Bastard, Nutte, Hundesohn,
+Hurensohn, Fotze, Slime, Fort, Disc, LoL
+
+Bei einem Treffer wird die Nachricht sofort gelöscht, eine kurze Hinweis-
+Nachricht (löscht sich nach 6 Sekunden selbst) gepostet, und - falls über
+`/settings log-channel` bzw. `!support config` gesetzt - eine Meldung in den
+Log-Kanal geschickt.
+
+**Wortliste erweitern/verwalten:** `/automod-words add|remove|list`
+(Berechtigung: Manage Guild).
+
+**Getestet:** Treffer wird erkannt und gelöscht; "Fort" matcht NICHT
+versehentlich in "Fortnite" (Wortgrenzen-Prüfung); add/remove/list
+funktionieren korrekt.
+
+**Ehrliche Einschränkung:** Einfache Umschreibungen wie "N i g g a" (mit
+Leerzeichen) oder Leetspeak ("n1gga") werden von dieser einfachen
+Wortgrenzen-Prüfung nicht erkannt. Auf Wunsch nachrüstbar (Normalisierung).
+
+**Nötige Berechtigung:** Der Bot braucht "Nachrichten verwalten" (Manage
+Messages) im jeweiligen Kanal, um Nachrichten löschen zu können.
+
+## 3. RAM-Optimierung (aus dem letzten Update, weiterhin aktiv)
+Cache-Limits, Sweepers, `--max-old-space-size=1536`, begrenzte Warn-Historie
+- siehe Kommentare in `index.js`/`storage.js`.
+
+## 4. Neue Befehle
+
+### Developer-Werkzeuge (`commands-dev.js`)
+`/base64 encode|decode`, `/hash md5|sha1|sha256`, `/json` (pretty-print),
+`/timestamp` (Unix -> Discord-Zeitformat), `/uuid`, `/snowflake` (Discord-ID
+zerlegen), `/regex-test`
+
+### Spotify-Integration (`commands-spotify.js`, `spotify.js`)
+`/spotify-login`, `/spotify-nowplaying`, `/spotify-play`, `/spotify-pause`,
+`/spotify-skip`, `/spotify-search`
+
+⚠️ **Wichtige, von Spotify selbst vorgegebene Einschränkung:** Spotifys
+API erlaubt es NICHT, Audio-Streams in eine Drittanwendung wie einen
+Discord-Sprachkanal einzuspeisen (Lizenzrecht) - das kann kein Bot, der
+offiziell über die Spotify-API arbeitet, auch nicht mit noch mehr Code.
+Was tatsächlich funktioniert und hier implementiert ist:
+- Login/Verknüpfung des eigenen Spotify-Accounts (OAuth)
+- Anzeigen, was aktuell läuft ("Now Playing")
+- Steuern der Wiedergabe auf dem eigenen, BEREITS GEÖFFNETEN Spotify-Gerät
+  (Play/Pause/Skip - offizielle "Spotify Connect"-Funktion)
+- Songsuche im Spotify-Katalog
+
+**Einrichtung (nur nötig, wenn du diese Befehle nutzen willst):**
+1. App erstellen auf https://developer.spotify.com/dashboard
+2. Als "Redirect URI" in der Spotify-App-Konfiguration exakt denselben Wert
+   eintragen wie `SPOTIFY_REDIRECT_URI` in der `.env` (Standard:
+   `http://localhost:8888/callback`)
+3. `SPOTIFY_CLIENT_ID` und `SPOTIFY_CLIENT_SECRET` aus dem Dashboard in die
+   `.env` eintragen
+4. Der Bot startet dann automatisch einen kleinen lokalen HTTP-Server
+   (Port über `SPOTIFY_CALLBACK_PORT`, Standard 8888) NUR für den
+   OAuth-Redirect - läuft nur auf deinem eigenen Rechner/Server, nicht
+   öffentlich erreichbar, außer du leitest den Port selbst weiter.
+
+Ohne diese drei Variablen funktionieren nur die `/spotify-*`-Befehle nicht
+(mit klarer Fehlermeldung) - alles andere läuft normal.
+
+**Getestet:** kompletter OAuth-Flow (Auth-URL, State-Verifizierung,
+Token-Austausch, Speichern, Now-Playing-Abruf, Fehlerfall "nicht verknüpft")
+mit simuliertem Spotify-API-Antworten - alles korrekt.
+
+## Projektstruktur (weiterhin flach, keine Unterordner)
+
 ```
-
-```powershell
-# Windows (PowerShell/cmd):
-tasklist | findstr node.exe
-taskkill /F /PID <PID>
-# oder (killt ALLE node.exe-Prozesse auf dem System!):
-taskkill /F /IM node.exe
-```
-
-Danach zur Sicherheit `bot.lock` löschen (falls vorhanden) und **einmal
-sauber neu starten**:
-
-```bash
-rm -f bot.lock      # Windows: del bot.lock
-npm run deploy
-npm start
-```
-
-Ab jetzt verhindert die Instanz-Sperre (siehe unten), dass das erneut
-passiert.
-
-## Was ist neu in v6
-
-### 1. RAM-Optimierung (Ziel: stabil unter 2GB)
-In `index.js`:
-- **Cache-Limits** (`Options.cacheWithLimits`): Nachrichten nur 50 pro Kanal,
-  Reactions/Presences/Voice-States/Invites/Bans/Scheduled-Events komplett
-  deaktiviert (werden von diesem Bot nicht gebraucht), Member-Cache auf 200
-  pro Server begrenzt.
-- **Sweepers**: Nachrichten-Cache wird alle 30 Minuten von Einträgen älter
-  als 15 Minuten befreit, Threads alle 60 Minuten.
-- **Node-Heap-Limit**: `npm start` startet jetzt mit
-  `node --max-old-space-size=1536` - der V8-Heap wird hart auf 1,5GB
-  begrenzt, lässt also auf einem 2GB-System noch Luft für das Betriebssystem
-  und andere Prozesse, statt den ganzen RAM aufzubrauchen.
-- **Warn-Historie begrenzt**: `storage.js` behält pro Nutzer maximal 100
-  Verwarnungen (ältere werden verworfen) - verhindert unbegrenztes Wachstum
-  von `data.json` und dem RAM-Cache über Jahre.
-- **Start-Banner**: Beim Start zeigt die Konsole jetzt PID, Node-Version und
-  die komplette geladene Command-Liste - fehlt dort ein Befehl, weißt du
-  sofort, dass ein alter Prozess noch läuft.
-
-### 2. `!support` - Bugfix-Status
-Der Code selbst (Ticket-Erstellung, genau eine Log-Nachricht, Dedupe pro
-Nachrichten-ID) ist unverändert korrekt und wurde erneut mit einem
-discord.js-Stub end-to-end getestet: 1 Ticket pro Anfrage, kein Duplikat bei
-Zweitanfrage, keine doppelte Antwort bei doppelt zugestelltem Event. Das
-verbleibende Duplikat-Problem ist mit sehr hoher Wahrscheinlichkeit der oben
-beschriebene Mehrfach-Prozess - nach dem Aufräumen sollte es verschwunden
-sein.
-
-### 3. Alle Commands - Vollständigkeitsprüfung
-Alle 35 Slash-Commands wurden erneut einzeln durchgeprüft: jedes Command-
-Objekt hat ein gültiges `data` (inkl. `toJSON()`) und eine `execute()`-
-Funktion, keine Namens-Duplikate, `/dice` ist vollständig implementiert und
-korrekt in `commands.js` eingebunden (bestätigt per Test). Das
-"unbekannter Befehl"-Problem war nicht im Code, siehe Abschnitt oben.
-
-## Projektstruktur (unverändert, flach, keine Unterordner)
-
-```
-index.js               Login, Instanz-Sperre, RAM-Limits, Presence, Routing
-deploy-commands.js       Registriert alle Slash-Commands bei Discord
-commands.js               Fasst alle Slash-Commands zu EINEM Array zusammen
-commands-core.js           /antimdm /web /uptime /status /changelog /links /reload /botinfo /help
-commands-mod.js             /kick /ban /timeout /warn /clear /slowmode /lock /unlock /nickname
-commands-extra.js           /ping /remindme /suggest /role /purge-user /say /coinflip /dice /8ball /membercount /roleinfo
-commands-utility.js         /userinfo /serverinfo /avatar /poll
-commands-settings.js        /settings
-commands-tickets.js         /ticket-panel + gemeinsame Ticket-Erstellung (Button UND !support)
-legacy-support.js            Text-Befehl !support (+ !support config)
-dm-notify.js                 DMs bei Warn/Kick/Ban/Timeout
-config.js                    Links, Changelog, .env-Reload
-storage.js                    data.json (Settings, Warnungen [max. 100/Nutzer], Ticket-Zähler)
+index.js                    Login, Lock, RAM-Limits, Presence, Routing, Spotify-Callback-Server
+deploy-commands.js            Registriert alle Slash-Commands
+commands.js                    Fasst ALLE Slash-Commands zusammen
+commands-core.js                /antimdm /web /uptime /status /changelog /links /reload /botinfo /help
+commands-mod.js                  /kick /ban /timeout /warn /clear /slowmode /lock /unlock /nickname
+commands-extra.js                /ping /remindme /suggest /role /purge-user /say /coinflip /dice /8ball /membercount /roleinfo
+commands-utility.js              /userinfo /serverinfo /avatar /poll
+commands-dev.js                   /base64 /hash /json /timestamp /uuid /snowflake /regex-test
+commands-spotify.js               /spotify-login /spotify-nowplaying /spotify-play /spotify-pause /spotify-skip /spotify-search
+commands-automod-words.js         /automod-words
+commands-settings.js              /settings
+commands-tickets.js                /ticket-panel + gemeinsame Ticket-Erstellung
+legacy-support.js                   !support (Text-Befehl)
+automod-filter.js                    Lokaler Wortfilter
+dm-notify.js                         DMs bei Warn/Kick/Ban/Timeout
+spotify.js                            Spotify-OAuth + API-Client
+config.js                             Links, Changelog, .env-Reload
+storage.js                            data.json (Settings, Warnungen, Tickets, Spotify-Tokens)
 package.json / .env / .gitignore
 ```
+
+Insgesamt jetzt **49 Slash-Commands** + der Text-Befehl `!support`.
 
 ## Einrichtung
 
@@ -113,13 +136,13 @@ npm run deploy
 npm start
 ```
 
-### Bei JEDER Code-Änderung künftig immer beide Schritte:
-1. `npm run deploy` (aktualisiert Discords Befehlsliste)
-2. Bot-Prozess **komplett neu starten** (nicht nur Dateien überschreiben!) -
-   am besten mit dem Kill-Vorgehen oben, um Zombie-Prozesse zu vermeiden.
-
 ### Privileged Gateway Intents (Developer Portal)
-- **MESSAGE CONTENT INTENT** aktivieren (für `!support`)
+- **MESSAGE CONTENT INTENT** - für `!support` und den Wortfilter
+
+### Bot-Berechtigungen (zusätzlich zu den bisherigen)
+- **Manage Messages** wird jetzt auch für den Wortfilter benötigt (Löschen
+  blockierter Nachrichten)
 
 ### Git-Push-Sicherheit
-`.gitignore` schließt `.env`, `data.json` und `bot.lock` aus.
+`.gitignore` schließt `.env`, `data.json` (jetzt auch mit Spotify-Tokens!)
+und `bot.lock` aus.

@@ -14,8 +14,9 @@ const DATA_FILE = path.join(__dirname, 'data.json');
 
 function defaultData() {
   return {
-    guilds: {}, // guildId -> { ticketCategoryId, ticketStaffRoleId, logChannelId, ticketCounter }
+    guilds: {}, // guildId -> { ticketCategoryId, ticketStaffRoleId, logChannelId, ticketCounter, bannedWords }
     warns: {}, // guildId -> { userId -> [ { reason, date, moderatorId } ] }
+    spotify: {}, // discordUserId -> { accessToken, refreshToken, expiresAt }
   };
 }
 
@@ -92,6 +93,16 @@ function clearWarns(guildId, userId) {
   return [];
 }
 
+function getSpotifyTokens(discordUserId) {
+  return (data.spotify && data.spotify[discordUserId]) || null;
+}
+
+function setSpotifyTokens(discordUserId, tokens) {
+  if (!data.spotify) data.spotify = {};
+  data.spotify[discordUserId] = tokens;
+  saveData(data);
+}
+
 module.exports = {
   getGuildSettings,
   setGuildSetting,
@@ -99,5 +110,7 @@ module.exports = {
   addWarn,
   getWarns,
   clearWarns,
+  getSpotifyTokens,
+  setSpotifyTokens,
   reload,
 };

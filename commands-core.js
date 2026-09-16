@@ -196,6 +196,7 @@ function buildHelpCommand(getAllCommands) {
           'role',
           'purge-user',
           'say',
+          'automod-words',
         ],
         '🎫 Tickets': ['ticket-panel'],
         '🧰 Sonstiges': [
@@ -211,6 +212,8 @@ function buildHelpCommand(getAllCommands) {
           'membercount',
           'roleinfo',
         ],
+        '👨‍💻 Developer': ['base64', 'hash', 'json', 'timestamp', 'uuid', 'snowflake', 'regex-test'],
+        '🎧 Spotify': ['spotify-login', 'spotify-nowplaying', 'spotify-play', 'spotify-pause', 'spotify-skip', 'spotify-search'],
         '⚙️ Einstellungen & Admin': ['settings', 'reload'],
       };
 

@@ -1,7 +1,7 @@
 {
   "name": "tylxrrrr-discord-bot",
-  "version": "6.0.0",
-  "description": "Discord Bot: Info-, Mod-, Utility-, Ticket- und Support-Befehle mit Single-Instance-Schutz, RAM-Limits, DM-Benachrichtigungen, lilaner Streaming-Status - flache Struktur ohne Unterordner",
+  "version": "7.0.0",
+  "description": "Discord Bot: Info-, Mod-, Utility-, Ticket-, Support-, Developer- und Spotify-Befehle mit lokalem Wortfilter, Single-Instance-Schutz, RAM-Limits - flache Struktur ohne Unterordner",
   "main": "index.js",
   "type": "commonjs",
   "scripts": {
